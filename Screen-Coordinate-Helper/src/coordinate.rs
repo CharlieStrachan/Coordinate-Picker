@@ -1,4 +1,4 @@
-use egui::{Pos2, Vec2};
+use egui::Pos2;
 
 pub struct CoordinateSystem {
     origin_top_left: bool,
