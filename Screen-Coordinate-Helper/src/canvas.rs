@@ -13,7 +13,7 @@ impl Canvas {
             width,
             height,
             offset: Vec2::ZERO,
-            zoom: 1.0,
+            zoom: 0.5, // Default to 50% zoom to show the entire canvas
         }
     }
 
@@ -24,6 +24,14 @@ impl Canvas {
 
     pub fn get_size(&self) -> (f32, f32) {
         (self.width, self.height)
+    }
+    
+    pub fn get_width(&self) -> f32 {
+        self.width
+    }
+    
+    pub fn get_height(&self) -> f32 {
+        self.height
     }
 
     pub fn pan(&mut self, delta: Vec2) {
@@ -44,7 +52,7 @@ impl Canvas {
 
     pub fn reset_view(&mut self) {
         self.offset = Vec2::ZERO;
-        self.zoom = 1.0;
+        self.zoom = 0.5; // Reset to 50% zoom
     }
 
     pub fn get_offset(&self) -> Vec2 {
