@@ -597,6 +597,23 @@ impl eframe::App for CoordinatePickerApp {
                 // Keep track of markers to remove 
                 let mut marker_to_remove: Option<usize> = None;
                 
+                // Add "Copy All Coordinates" button
+                if !self.markers.is_empty() {
+                    if ui.button("Copy All Coordinates").clicked() {
+                        // Create a string with all marker coordinates
+                        let all_coords = self.markers.iter().enumerate()
+                            .map(|(i, marker)| {
+                                let x = marker.system_position.x as i32;
+                                let y = marker.system_position.y as i32;
+                                format!("{}. ({}, {})", i + 1, x, y)
+                            })
+                            .collect::<Vec<String>>()
+                            .join("\n");
+                        
+                        self.copy_to_clipboard(all_coords);
+                    }
+                }
+                
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     // Process the markers to get coordinates ahead of time
                     let markers_data: Vec<(usize, i32, i32, String)> = self.markers.iter().enumerate()
@@ -648,6 +665,7 @@ impl eframe::App for CoordinatePickerApp {
                     ui.label("• Click to place a marker");
                     ui.label("• Right-click to remove a marker at cursor position");
                     ui.label("• Use 'Delete' button to remove specific markers from the list");
+                    ui.label("• Use 'Copy All Coordinates' to copy all marker coordinates at once");
                     ui.label("• Middle-click or Alt+drag to pan");
                     ui.label("• Scroll to zoom in/out");
                     ui.label("• Adjust grid settings for precise positioning");
