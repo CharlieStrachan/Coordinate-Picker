@@ -1,6 +1,6 @@
 [package]
 name = "coordinate_picker"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 authors = ["Your Name <your.email@example.com>"]
 description = "A tool for determining screen coordinates for 2D application development"
