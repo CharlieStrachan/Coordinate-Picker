@@ -1,3 +1,4 @@
+
 use egui::{Pos2, Vec2, Rect};
 
 pub struct Canvas {
@@ -13,7 +14,7 @@ impl Canvas {
             width,
             height,
             offset: Vec2::ZERO,
-            zoom: 0.5, // Default to 50% zoom to show the entire canvas
+            zoom: 0.5, // Start at 50% zoom
         }
     }
 
@@ -42,17 +43,14 @@ impl Canvas {
         let old_zoom = self.zoom;
         self.zoom = (self.zoom * factor).clamp(0.1, 10.0);
         
-        // Adjust offset to zoom at mouse position
         let view_center = view_rect.center();
         let mouse_offset = pos - view_center;
-        
-        // Calculate how much the offset needs to change
         self.offset -= mouse_offset * (self.zoom / old_zoom - 1.0);
     }
 
     pub fn reset_view(&mut self) {
         self.offset = Vec2::ZERO;
-        self.zoom = 0.5; // Reset to 50% zoom
+        self.zoom = 0.5;
     }
 
     pub fn get_offset(&self) -> Vec2 {
@@ -66,7 +64,6 @@ impl Canvas {
     pub fn get_screen_rect(&self, view_rect: Rect) -> Rect {
         let center = view_rect.center() + self.offset;
         let half_size = Vec2::new(self.width, self.height) * 0.5 * self.zoom;
-        
         Rect::from_center_size(center, half_size * 2.0)
     }
 
