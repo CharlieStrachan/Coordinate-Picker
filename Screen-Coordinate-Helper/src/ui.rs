@@ -1,3 +1,4 @@
+
 use egui::{Color32, Pos2};
 
 pub struct UiState {
@@ -5,24 +6,25 @@ pub struct UiState {
     pub selected_resolution: String,
     pub custom_width: f32,
     pub custom_height: f32,
-    
+
     // Grid settings
     pub show_grid: bool,
     pub grid_size: f32,
     pub enable_snapping: bool,
-    
+
     // Coordinate system settings
     pub origin_top_left: bool,
-    
+
     // Marker settings
     pub marker_color: Color32,
-    
+
     // Current position tracking
     pub current_position: Pos2,
     pub current_position_raw: Pos2,
-    
+
     // Theme settings
     pub dark_mode: bool,
+    pub recalculate_markers: bool,
 }
 
 impl Default for UiState {
@@ -39,6 +41,7 @@ impl Default for UiState {
             current_position: Pos2::ZERO,
             current_position_raw: Pos2::ZERO,
             dark_mode: true,
+            recalculate_markers: true,
         }
     }
 }
