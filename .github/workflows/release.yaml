@@ -17,94 +17,107 @@ jobs:
     steps:
       - uses: actions/checkout@v3
         with:
-          fetch-depth: 2
+          fetch-depth: 2 # Fetch depth 2 to compare with previous commit
 
       - name: Get package name from Cargo.toml
         id: get-name
         run: |
-          PACKAGE_NAME=$(grep -m1 '^name' Cargo.toml | sed 's/name\s*=\s*"\(.*\)"/\1/')
+          PACKAGE_NAME=$(awk -F'=' '/^name\s*=/ { gsub(/^[[:space:]]*"|"|[[:space:]]*$/, "", $2); print $2; exit }' Cargo.toml)
+          if [ -z "$PACKAGE_NAME" ]; then
+            echo "Error: Package name not found in Cargo.toml"
+            exit 1
+          fi
           echo "package_name=$PACKAGE_NAME" >> $GITHUB_OUTPUT
           echo "Package name: $PACKAGE_NAME"
 
       - name: Check if Cargo.toml version changed
         id: check
         run: |
-          CURRENT_VERSION=$(grep -m1 version Cargo.toml | cut -d '"' -f2)
+          CURRENT_VERSION=$(awk -F'=' '/^version\s*=/ { gsub(/^[[:space:]]*"|"|[[:space:]]*$/, "", $2); print $2; exit }' Cargo.toml)
+          if [ -z "$CURRENT_VERSION" ]; then
+            echo "Error: Current version not found in Cargo.toml"
+            echo "should_release=false" >> $GITHUB_OUTPUT
+            echo "version=unknown" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
           git checkout HEAD^1
-          PREVIOUS_VERSION=$(grep -m1 version Cargo.toml | cut -d '"' -f2)
+          PREVIOUS_VERSION=$(awk -F'=' '/^version\s*=/ { gsub(/^[[:space:]]*"|"|[[:space:]]*$/, "", $2); print $2; exit }' Cargo.toml)
+          git checkout HEAD # Go back to the current commit
+
           if [ "$CURRENT_VERSION" != "$PREVIOUS_VERSION" ]; then
             echo "should_release=true" >> $GITHUB_OUTPUT
             echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-            echo "Version changed: $PREVIOUS_VERSION -> $CURRENT_VERSION"
+            echo "Version changed: $PREVIOUS_VERSION -> $CURRENT_VERSION. Will create release."
           else
             echo "should_release=false" >> $GITHUB_OUTPUT
-            echo "Version unchanged: $CURRENT_VERSION"
+            echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+            echo "Version unchanged: $CURRENT_VERSION. No release needed."
           fi
 
   create-release:
-      needs: check-version
-      if: needs.check-version.outputs.should_release == 'true'
-      runs-on: ubuntu-latest
-      permissions:
-        contents: write
-        packages: write
-      outputs:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-      steps:
-        - uses: actions/checkout@v3
-
-        - name: Create Release
-          id: create_release
-          env:
-            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          uses: softprops/action-gh-release@v1
-          with:
-            tag_name: v${{ needs.check-version.outputs.version }}
-            name: Release v${{ needs.check-version.outputs.version }}
-            draft: false
-            prerelease: false
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true' # Only run if the version check determined a release is needed
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Need contents: write for creating/uploading to releases
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    steps:
+      - name: Create Release
+        id: create_release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ needs.check-version.outputs.version }} # Use the version determined in the check-version job
+          name: Release v${{ needs.check-version.outputs.version }}
+          draft: false
+          prerelease: false
+          # body: Add release notes here based on commit messages if needed
+          # files: Optional: Specify files to include initially, though matrix builds upload later
 
   build-release:
     needs: [check-version, create-release]
-    if: needs.check-version.outputs.should_release == 'true'
+    if: needs.check-version.outputs.should_release == 'true' # Only run if the version check determined a release is needed
     permissions:
-      contents: write
+      contents: write # Need contents: write to upload assets to the release created in create-release
     strategy:
-      fail-fast: false  # Continue with other builds if one fails
+      fail-fast: false # Continue with other builds if one platform build fails
       matrix:
         include:
           # Standard platforms (dynamically linked)
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             bin_path: target/x86_64-unknown-linux-gnu/release
-            asset_name: -linux-x86_64
+            asset_suffix: -linux-x86_64
 
           # Windows builds
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bin_path: target/x86_64-pc-windows-msvc/release
-            asset_name: -windows-x86_64.exe
-            extension: .exe
+            asset_suffix: -windows-x86_64.exe
+            extension: .exe # Needed for Windows executables
           - os: windows-latest
             target: i686-pc-windows-msvc
             bin_path: target/i686-pc-windows-msvc/release
-            asset_name: -windows-i686.exe
+            asset_suffix: -windows-i686.exe
             extension: .exe
           - os: windows-latest
             target: aarch64-pc-windows-msvc
             bin_path: target/aarch64-pc-windows-msvc/release
-            asset_name: -windows-arm64.exe
+            asset_suffix: -windows-arm64.exe
             extension: .exe
 
           # macOS builds
           - os: macos-latest
             target: x86_64-apple-darwin
             bin_path: target/x86_64-apple-darwin/release
-            asset_name: -macos-x86_64
+            asset_suffix: -macos-x86_64
           - os: macos-latest
             target: aarch64-apple-darwin
             bin_path: target/aarch64-apple-darwin/release
-            asset_name: -macos-arm64
+            asset_suffix: -macos-arm64
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -116,242 +129,266 @@ jobs:
           profile: minimal
           toolchain: stable
           target: ${{ matrix.target }}
-          override: true
+          override: true # Ensure this toolchain is used
 
-      # Install dependencies for macOS
+      # Install dependencies for macOS (OpenSSL and Protobuf)
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
         run: |
           brew update
           brew install openssl@1.1 protobuf@3
           echo "OPENSSL_DIR=$(brew --prefix openssl@1.1)" >> $GITHUB_ENV
-          # Add protoc to PATH and check version
-          echo "PATH=$(brew --prefix protobuf@3)/bin:$PATH" >> $GITHUB_ENV
           brew link --force protobuf@3
-          protoc --version
+          echo "PATH=$(brew --prefix protobuf@3)/bin:$PATH" >> $GITHUB_ENV
+          protoc --version # Verify protoc is available
 
-      # Install OpenSSL for Linux
+      # Install dependencies for Linux (OpenSSL and Protobuf)
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev libxcb-shape0-dev libxcb-xfixes0-dev libgtk-3-dev libglib2.0-dev libatk1.0-dev
+          sudo apt-get install -y pkg-config libssl-dev libprotobuf-dev
 
-      # Build using cargo for native targets
-      - name: Build native
+      - name: Build release binary
         uses: actions-rs/cargo@v1
         env:
-          RUST_BACKTRACE: 1
+          RUST_BACKTRACE: 1 # Enable backtraces for easier debugging
         with:
           command: build
           args: --release --target ${{ matrix.target }}
 
-      - name: Set binary path variables
-        shell: bash
+      - name: Set binary path and asset name variables
+        shell: bash # Use bash for consistent scripting syntax
         run: |
           PACKAGE_NAME="${{ needs.check-version.outputs.package_name }}"
-          FULL_BIN_PATH="${{ matrix.bin_path }}/${PACKAGE_NAME}${{ matrix.extension || '' }}"
-          FULL_ASSET_NAME="${PACKAGE_NAME}${{ matrix.asset_name }}"
+          VERSION="${{ needs.check-version.outputs.version }}" # Optional, useful for debug
 
-          echo "PACKAGE_NAME=${PACKAGE_NAME}" >> $GITHUB_ENV
-          echo "FULL_BIN_PATH=${FULL_BIN_PATH}" >> $GITHUB_ENV
-          echo "FULL_ASSET_NAME=${FULL_ASSET_NAME}" >> $GITHUB_ENV
+          # Construct the full path to the built binary
+          BINARY_EXTENSION="${{ matrix.extension || '' }}" # Use default extension if matrix.extension is not set
+          BINARY_PATH="${{ matrix.bin_path }}/${PACKAGE_NAME}${BINARY_EXTENSION}"
+
+          # Construct the final asset name for the release
+          ASSET_FINAL_NAME="${PACKAGE_NAME}${matrix.asset_suffix}"
+
+          echo "BINARY_PATH=${BINARY_PATH}" >> $GITHUB_ENV
+          echo "ASSET_FINAL_NAME=${ASSET_FINAL_NAME}" >> $GITHUB_ENV
+          echo "PACKAGE_NAME=${PACKAGE_NAME}" >> $GITHUB_ENV # Keep package name in env for debug/SHA step
 
           # Debug info
           echo "Debug info:"
           echo "- Package name: ${PACKAGE_NAME}"
-          echo "- Binary path: ${FULL_BIN_PATH}"
-          echo "- Asset name: ${FULL_ASSET_NAME}"
+          echo "- Version: ${VERSION}"
+          echo "- Target: ${{ matrix.target }}"
+          echo "- Binary path (resolved): ${BINARY_PATH}"
+          echo "- Asset name (resolved): ${ASSET_FINAL_NAME}"
 
-          # Verify binary exists
-          if [ -f "${FULL_BIN_PATH}" ]; then
-            echo "✅ Binary exists at: ${FULL_BIN_PATH}"
-            ls -la "${FULL_BIN_PATH}"
+          # Verify binary exists BEFORE trying to generate SHA or upload
+          if [ -f "${BINARY_PATH}" ]; then
+              echo "✅ Binary exists at: ${BINARY_PATH}"
+              ls -la "${BINARY_PATH}"
           else
-            echo "❌ Binary NOT found at: ${FULL_BIN_PATH}"
-            echo "Contents of target directory:"
-            find target -type f -name "${PACKAGE_NAME}*" | sort
+              echo "❌ Binary NOT found at: ${BINARY_PATH}"
+              echo "Contents of target directory:"
+              find target -type f -name "${PACKAGE_NAME}*" -print || true # find command might fail if target dir doesn't exist
+              ls -R target || true # List all files in target directory
+              exit 1 # Fail the step if the binary isn't found
           fi
 
-      - name: Generate SHA256
+      - name: Generate SHA256 sum
         shell: bash
         run: |
-          # Verify binary exists again just before SHA256 generation
-          if [ ! -f "$FULL_BIN_PATH" ]; then
-            echo "❌ ERROR: Binary still not found at $FULL_BIN_PATH"
-            echo "Searching for any binaries:"
-            find target -type f -executable -o -name "*.exe" -o -name "*.wasm" | sort
-            exit 1
-          fi
-
-          echo "Generating SHA256 for $FULL_BIN_PATH"
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            sha256sum "$FULL_BIN_PATH" > "$FULL_BIN_PATH.sha256"
+            sha256sum "$BINARY_PATH" > "$BINARY_PATH.sha256"
           else
-            shasum -a 256 "$FULL_BIN_PATH" > "$FULL_BIN_PATH.sha256"
+            # Use sha256sum which is standard on Linux and available via brew on macOS
+            sha256sum "$BINARY_PATH" > "$BINARY_PATH.sha256"
           fi
+          echo "Generated SHA256 file: ${BINARY_PATH}.sha256"
+          cat "$BINARY_PATH.sha256" # Print content for verification
 
-          echo "SHA256 file contents:"
-          cat "$FULL_BIN_PATH.sha256"
-
-      - name: Upload Binary
+      - name: Upload Binary Asset
         uses: actions/upload-release-asset@v1
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }} # Use the default GITHUB_TOKEN
         with:
           upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ${{ env.FULL_BIN_PATH }}
-          asset_name: ${{ env.FULL_ASSET_NAME }}
+          asset_path: ${{ env.BINARY_PATH }} # Use the variable set earlier
+          asset_name: ${{ env.ASSET_FINAL_NAME }} # Use the variable set earlier
           asset_content_type: application/octet-stream
-        continue-on-error: true
 
-      - name: Upload SHA256
+      - name: Upload SHA256 Asset
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ github.token }}
         with:
           upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ${{ env.FULL_BIN_PATH }}.sha256
-          asset_name: ${{ env.FULL_ASSET_NAME }}.sha256
+          asset_path: ${{ env.BINARY_PATH }}.sha256 # Path to the generated SHA256 file
+          asset_name: ${{ env.ASSET_FINAL_NAME }}.sha256 # Asset name for the SHA256 file
           asset_content_type: text/plain
-        continue-on-error: true
 
-  # Use cross for more complex cross-compilation targets
+
   cross-builds:
     needs: [check-version, create-release]
-    if: needs.check-version.outputs.should_release == 'true'
-    runs-on: ubuntu-latest
+    if: needs.check-version.outputs.should_release == 'true' # Only run if the version check determined a release is needed
+    runs-on: ubuntu-latest # Cross builds typically run on Linux
     permissions:
-      contents: write
+      contents: write # Need contents: write to upload assets to the release
     strategy:
-      fail-fast: false
+      fail-fast: false # Continue with other cross builds if one fails
       matrix:
         include:
-          # Static Linux build
+          # Static Linux build (musl)
           - target: x86_64-unknown-linux-musl
             asset_suffix: -linux-x86_64-static
-            openssl_arch: amd64
+            openssl_arch: amd64 # Architecture needed for libssl-dev in cross container
 
-          # ARM64 Linux
+          # ARM64 Linux (gnu)
           - target: aarch64-unknown-linux-gnu
             asset_suffix: -linux-arm64
             openssl_arch: arm64
 
-          # ARM64 static Linux
+          # ARM64 static Linux (musl)
           - target: aarch64-unknown-linux-musl
             asset_suffix: -linux-arm64-static
             openssl_arch: arm64
 
-          # 32-bit Linux
+          # 32-bit Linux (gnu)
           - target: i686-unknown-linux-gnu
             asset_suffix: -linux-i686
             openssl_arch: i386
 
-          # 32-bit static Linux
+          # 32-bit static Linux (musl)
           - target: i686-unknown-linux-musl
             asset_suffix: -linux-i686-static
             openssl_arch: i386
 
-          # ARMv7 (32-bit ARM for Raspberry Pi)
+          # ARMv7 (32-bit ARM for Raspberry Pi) (gnueabihf)
           - target: armv7-unknown-linux-gnueabihf
             asset_suffix: -linux-armv7
             openssl_arch: armhf
 
-          # ARMv7 static
+          # ARMv7 static (musleabihf)
           - target: armv7-unknown-linux-musleabihf
             asset_suffix: -linux-armv7-static
             openssl_arch: armhf
 
-          # WebAssembly
+          # WebAssembly (doesn't use cross, handled separately)
           - target: wasm32-unknown-unknown
             asset_suffix: .wasm
             extension: .wasm
-            no_openssl: true
+            no_openssl: true # No OpenSSL needed for this target
 
     steps:
       - uses: actions/checkout@v3
 
+      # Install Rust toolchain for the runner's architecture and specified targets
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
           profile: minimal
           toolchain: stable
-          target: ${{ matrix.target }}
+          target: ${{ matrix.target }} # Install the specific cross-compilation target
           override: true
 
       - name: Install cross
         run: |
-          cargo install cross --git https://github.com/cross-rs/cross
+          cargo install cross --git https://github.com/cross-rs/cross --force # Install cross from git
 
-      - name: Set variables
+      - name: Set variables for cross-build
+        shell: bash
         run: |
           PACKAGE_NAME="${{ needs.check-version.outputs.package_name }}"
-          ASSET_NAME="${PACKAGE_NAME}${{ matrix.asset_suffix }}"
-          BIN_PATH="target/${{ matrix.target }}/release/${PACKAGE_NAME}${{ matrix.extension || '' }}"
+          VERSION="${{ needs.check-version.outputs.version }}" # Optional
+
+          # Cross places builds in target/<target>/release/
+          BINARY_EXTENSION="${{ matrix.extension || '' }}" # Use default extension if matrix.extension is not set
+          BINARY_PATH="target/${{ matrix.target }}/release/${PACKAGE_NAME}${BINARY_EXTENSION}"
+
+          # Construct the final asset name
+          ASSET_FINAL_NAME="${PACKAGE_NAME}${matrix.asset_suffix}"
 
           echo "PACKAGE_NAME=${PACKAGE_NAME}" >> $GITHUB_ENV
-          echo "ASSET_NAME=${ASSET_NAME}" >> $GITHUB_ENV
-          echo "BIN_PATH=${BIN_PATH}" >> $GITHUB_ENV
+          echo "BINARY_PATH=${BINARY_PATH}" >> $GITHUB_ENV
+          echo "ASSET_FINAL_NAME=${ASSET_FINAL_NAME}" >> $GITHUB_ENV
 
           echo "Cross-build variables:"
           echo "- Package: ${PACKAGE_NAME}"
-          echo "- Asset name: ${ASSET_NAME}"
-          echo "- Binary path: ${BIN_PATH}"
+          echo "- Version: ${VERSION}"
+          echo "- Target: ${{ matrix.target }}"
+          echo "- Binary Path (resolved): ${BINARY_PATH}"
+          echo "- Asset Name (resolved): ${ASSET_FINAL_NAME}"
 
-      # Create Cross.toml with pre-build commands for OpenSSL
-      - name: Configure cross for OpenSSL
-        if: ${{ !matrix.no_openssl }}
+      # Create Cross.toml with pre-build commands for OpenSSL (if needed for this target)
+      - name: Configure cross for OpenSSL dependency
+        if: ${{ !matrix.no_openssl }} # Skip for targets like WASM
         run: |
+          echo "Creating Cross.toml for target ${{ matrix.target }}..."
           cat > Cross.toml << EOF
           [target.${{ matrix.target }}]
           pre-build = [
-              "dpkg --add-architecture ${{ matrix.openssl_arch }}",
+              "dpkg --add-architecture ${{ matrix.openssl_arch }}", # Add necessary architecture within the cross container
               "apt-get update",
-              "apt-get install -y libglib2.0-dev libatk1.0-dev libgtk-3-dev libxcb-shape0-dev libxcb-xfixes0-dev libssl-dev:${{ matrix.openssl_arch }}"
+              "apt-get install -y libssl-dev:${{ matrix.openssl_arch }}" # Install libssl-dev
+              # Add other dependencies needed for cross-compilation here if any
           ]
           EOF
-
+          echo "Cross.toml content:"
           cat Cross.toml
 
-      # Special build for WebAssembly
-      - name: Build WebAssembly
+      # Special build step for WebAssembly (not using cross)
+      - name: Build WebAssembly target
         if: matrix.target == 'wasm32-unknown-unknown'
         run: |
-          rustup target add wasm32-unknown-unknown
+          echo "Building WASM target: ${{ matrix.target }}"
           cargo build --release --target wasm32-unknown-unknown
+          echo "WASM build finished."
 
-      # Build using cross for non-WASM targets
+      # Build using cross for other targets
       - name: Build with cross
-        if: matrix.target != 'wasm32-unknown-unknown'
+        if: matrix.target != 'wasm32-unknown-unknown' # Skip WASM target as it's built separately
         run: |
+          echo "Building target with cross: ${{ matrix.target }}"
           cross build --release --target ${{ matrix.target }}
+          echo "Cross build finished."
 
-      - name: Generate SHA256
+      - name: Verify binary exists after build
+        shell: bash
         run: |
-          if [ -f "$BIN_PATH" ]; then
-            sha256sum "$BIN_PATH" > "$BIN_PATH.sha256"
-          else
-            echo "Binary not found at $BIN_PATH"
-            find target -name "$PACKAGE_NAME" -o -name "$PACKAGE_NAME.exe" -o -name "*.wasm" | sort
-            exit 1
-          fi
+           if [ -f "${BINARY_PATH}" ]; then
+               echo "✅ Binary exists at: ${BINARY_PATH}"
+               ls -la "${BINARY_PATH}"
+           else
+               echo "❌ Binary NOT found at: ${BINARY_PATH}"
+               echo "Contents of target release directory for this target:"
+               ls -R "target/${{ matrix.target }}/release/" || true
+               find target -type f -name "${PACKAGE_NAME}*" -print || true # Search more broadly just in case
+               exit 1 # Fail the step if the binary isn't found
+           fi
 
-      - name: Upload Binary
+      - name: Generate SHA256 sum
+        shell: bash
+        run: |
+          # Use sha256sum as runner is always Ubuntu
+          sha256sum "$BINARY_PATH" > "$BINARY_PATH.sha256"
+          echo "Generated SHA256 file: ${BINARY_PATH}.sha256"
+          cat "$BINARY_PATH.sha256" # Print content for verification
+
+      - name: Upload Binary Asset
         uses: actions/upload-release-asset@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Use the default GITHUB_TOKEN
         with:
           upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ${{ env.BIN_PATH }}
-          asset_name: ${{ env.ASSET_NAME }}
+          asset_path: ${{ env.BINARY_PATH }} # Use the variable set earlier
+          asset_name: ${{ env.ASSET_FINAL_NAME }} # Use the variable set earlier
           asset_content_type: application/octet-stream
 
-      - name: Upload SHA256
+      - name: Upload SHA256 Asset
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ${{ env.BIN_PATH }}.sha256
-          asset_name: ${{ env.ASSET_NAME }}.sha256
+          asset_path: ${{ env.BINARY_PATH }}.sha256 # Path to the generated SHA256 file
+          asset_name: ${{ env.ASSET_FINAL_NAME }}.sha256 # Asset name for the SHA256 file
           asset_content_type: text/plain
